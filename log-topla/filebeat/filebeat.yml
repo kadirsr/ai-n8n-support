@@ -1,0 +1,26 @@
+filebeat.inputs:
+  - type: filestream
+    id: market-python-json
+    enabled: true
+    paths:
+      - /var/log/market/*.ndjson
+    parsers:
+      - ndjson:
+          target: ""
+          overwrite_keys: true
+          add_error_key: true
+
+setup.template.enabled: true
+setup.template.overwrite: true
+setup.dashboards.enabled: true
+setup.dashboards.retry.enabled: true
+setup.dashboards.retry.interval: 15s
+setup.dashboards.retry.maximum: 20
+setup.kibana:
+  host: "kibana:5601"
+
+output.elasticsearch:
+  hosts: ["http://elasticsearch:9200"]
+
+logging.level: info
+logging.to_files: false

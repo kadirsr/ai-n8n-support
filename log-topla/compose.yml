@@ -1,0 +1,76 @@
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.2.3
+    container_name: market-elasticsearch
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms1g -Xmx1g
+    ports:
+      - "9200:9200"
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    networks:
+      - elastic_internal
+      - support_net
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:9.2.3
+    container_name: market-kibana
+    restart: unless-stopped
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elasticsearch
+    networks:
+      - elastic_internal
+      - support_net
+
+  log-producer:
+    build:
+      context: ./log-producer
+    container_name: market-python-log-producer
+    restart: unless-stopped
+    environment:
+      LOG_FILE: /var/log/market/market-python.ndjson
+      LOGS_PER_MINUTE: 100
+      SERVICE_NAME: market-simulator
+      HOST_NAME: market-python-log-producer
+      ECS_VERSION: 9.3.0
+    volumes:
+      - ./logs:/var/log/market
+    networks:
+      - elastic_internal
+      - support_net
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:9.2.3
+    container_name: market-filebeat
+    user: root
+    restart: unless-stopped
+    command: ["filebeat", "-e", "--strict.perms=false"]
+    depends_on:
+      - elasticsearch
+      - kibana
+      - log-producer
+    volumes:
+      - ./filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - ./logs:/var/log/market:ro
+      - filebeatdata:/usr/share/filebeat/data
+    networks:
+      - elastic_internal
+      - support_net
+
+volumes:
+  esdata:
+  filebeatdata:
+
+networks:
+  elastic_internal:
+    driver: bridge
+  support_net:
+    external: true
+    name: support_net
