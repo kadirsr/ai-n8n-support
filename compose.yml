@@ -1,0 +1,32 @@
+services:
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:2.11.2
+    container_name: n8n
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    environment:
+      TZ: Europe/Istanbul
+      GENERIC_TIMEZONE: Europe/Istanbul
+      N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS: "true"
+      N8N_RUNNERS_ENABLED: "true"
+      NODE_ENV: production
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres-db
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: appdb
+      DB_POSTGRESDB_USER: appuser
+      DB_POSTGRESDB_PASSWORD: StrongPass123
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./local-files:/files
+    networks:
+      - support_net
+
+volumes:
+  n8n_data:
+
+networks:
+  support_net:
+    external: true
+    name: support_net
