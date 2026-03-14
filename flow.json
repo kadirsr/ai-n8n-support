@@ -1,0 +1,193 @@
+{
+  "name": "Musteri Log Asistani",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "customer-log-assistant",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "aac34349-f200-466a-a6a2-ab3369f15705",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "customer-log-assistant"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body ?? $json;\nconst customerNo = String(body.customerNo ?? '').trim();\nconst startAtRaw = String(body.startAt ?? '').trim();\nconst endAtRaw = String(body.endAt ?? '').trim();\nconst customerQuestion = String(body.customerQuestion ?? '').trim();\nconst channel = String(body.channel ?? 'web-chat').trim();\nconst elasticsearchUrl = String(body.elasticsearchUrl ?? 'http://market-elasticsearch:9200/market-logs-2026.03.14/_search').trim();\nconst kibanaUrl = String(body.kibanaUrl ?? 'http://192.168.1.33:5601/').trim();\nconst llmUrlBase = String(body.llmUrl ?? 'http://192.168.1.8/v1').trim();\nconst llmModel = String(body.llmModel ?? 'qwen/qwen3.5-9b').trim();\n\nfunction asIstanbulToUtc(value) {\n  if (!value || !value.includes('T')) {\n    throw new Error('Tarih alani gecersiz.');\n  }\n\n  const [datePart, timePart] = value.split('T');\n  const [year, month, day] = datePart.split('-').map(Number);\n  const [hour, minute] = timePart.split(':').map(Number);\n\n  return new Date(Date.UTC(year, month - 1, day, hour - 3, minute, 0));\n}\n\nlet llmUrl = llmUrlBase;\nif (!llmUrl.endsWith('/chat/completions')) {\n  llmUrl = llmUrl.replace(/\\/$/, '') + '/chat/completions';\n}\n\nif (!customerNo) throw new Error('customerNo zorunludur.');\nif (!startAtRaw || !endAtRaw) throw new Error('startAt ve endAt zorunludur.');\n\nconst startAt = asIstanbulToUtc(startAtRaw);\nconst endAt = asIstanbulToUtc(endAtRaw);\n\nif (Number.isNaN(startAt.getTime()) || Number.isNaN(endAt.getTime())) {\n  throw new Error('Tarih alanlari gecersiz.');\n}\n\nif (startAt > endAt) {\n  throw new Error('Baslangic tarihi bitis tarihinden buyuk olamaz.');\n}\n\nreturn [{\n  json: {\n    customerNo,\n    channel,\n    customerQuestion,\n    startAt: startAt.toISOString(),\n    endAt: endAt.toISOString(),\n    elasticsearchUrl,\n    kibanaUrl,\n    llmUrl,\n    llmModel,\n    query: {\n      size: 50,\n      sort: [{ '@timestamp': { order: 'desc' } }],\n      query: {\n        bool: {\n          filter: [\n            {\n              range: {\n                '@timestamp': {\n                  gte: startAt.toISOString(),\n                  lte: endAt.toISOString()\n                }\n              }\n            }\n          ],\n          should: [\n            { term: { 'user.id.keyword': customerNo } },\n            { term: { 'user.id': customerNo } },\n            { term: { 'customer_no.keyword': customerNo } },\n            { term: { 'customer_no': customerNo } }\n          ],\n          minimum_should_match: 1\n        }\n      }\n    }\n  }\n}];\n"
+      },
+      "id": "7127e4c9-e8aa-4044-b791-b31b5823836d",
+      "name": "Istegi Hazirla",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.elasticsearchUrl }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.query }}",
+        "options": {}
+      },
+      "id": "5052d342-27b2-4c98-8e66-b6089015664c",
+      "name": "ElasticSearch Ara",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        480,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const requestData = $('Istegi Hazirla').first().json;\nconst hits = $json.hits?.hits ?? [];\nconst rows = hits.map((hit) => hit._source ?? {});\n\nconst normalizedRows = rows.map((row) => ({\n  timestamp: row['@timestamp'] ?? '-',\n  userId: row.user?.id ?? row.customer_no ?? '-',\n  level: row.log?.level ?? row.level ?? '-',\n  action: row.event?.action ?? row.event_type ?? '-',\n  outcome: row.event?.outcome ?? row.outcome ?? '-',\n  message: String(row.message ?? '-').trim() || '-'\n}));\n\nconst successCount = normalizedRows.filter((row) => row.outcome === 'success').length;\nconst failureCount = normalizedRows.filter((row) => row.outcome === 'failure' || row.level === 'ERROR' || row.level === 'WARN').length;\nconst latest = normalizedRows[0] ?? { action: '-', level: '-', message: '-' };\nconst lastFailure = normalizedRows.find((row) => row.outcome === 'failure' || row.level === 'ERROR' || row.level === 'WARN');\nconst latestMessages = normalizedRows.slice(0, 8).map((row) => row.message);\nconst detailedLogLines = normalizedRows.slice(0, 8).map((row) => `- Zaman: ${row.timestamp} | Olay: ${row.action} | Sonuc: ${row.outcome} | Mesaj: ${row.message}`);\n\nlet fallbackReply;\nif (!normalizedRows.length) {\n  fallbackReply = `Belirttiginiz zaman araliginda ${requestData.customerNo} icin bir kayit bulamadim. Isterseniz biraz daha genis bir saat araligi ile tekrar kontrol edebilirim.`;\n} else {\n  fallbackReply = `${requestData.customerNo} numarali musteriye ait hareketleri kontrol ettim. `;\n  if (lastFailure) {\n    fallbackReply += `Kayitlarda en son dikkat ceken sorun su mesaja yansiyor: ${lastFailure.message}. `;\n  } else {\n    fallbackReply += `Kayitlarda islemin devam ettigini gosteren mesajlar gorunuyor. `;\n  }\n  fallbackReply += `Musteriye teknik detay vermeden kisa ve net bir durum bilgilendirmesi donebilirsiniz.`;\n}\n\nconst llmMessages = [\n  {\n    role: 'system',\n    content: 'Sen bir musteri temsilcisi asistanisin. Sana verilen loglarda asil yorumlanacak alan message alanidir. Mesaj metinlerinden neden-sonuc cikart ve musteriye kibar, net, teknik olmayan Turkce cevap ver. ElasticSearch, Kibana, index, log, container, node gibi teknik terimleri asla kullanma.'\n  },\n  {\n    role: 'user',\n    content: [\n      `Musteri numarasi: ${requestData.customerNo}`,\n      `Kanal: ${requestData.channel}`,\n      `Musteri sorusu: ${requestData.customerQuestion || 'Belirtilmedi'}`,\n      '',\n      'Onemli not: Asagidaki message alanlari birincil kanittir. Ozellikle message metinlerine bakarak yorum yap.',\n      'Message alanlari:',\n      ...latestMessages.map((line) => `- ${line}`),\n      '',\n      'Detayli log ozeti:',\n      ...detailedLogLines,\n      '',\n      'Kurallar:',\n      '- Sadece Turkce cevap ver.',\n      '- Cevap en fazla 4 cumle olsun.',\n      '- Musteriye net ve profesyonel cevap ver.',\n      '- Teknik terim kullanma.',\n      '- Sorunun muhtemel nedenini message metinlerinden cikar.',\n      '- Eger kayit yoksa daha genis zaman araligi ile tekrar kontrol etmeyi oner.'\n    ].join('\\n')\n  }\n];\n\nreturn [{\n  json: {\n    fallbackReply,\n    llmUrl: requestData.llmUrl,\n    llmModel: requestData.llmModel,\n    llmMessages\n  }\n}];"
+      },
+      "id": "20b26eff-dc5e-43ea-8acb-704047c0aee1",
+      "name": "Prompt ve Ozet Hazirla",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.llmUrl }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { model: $json.llmModel, messages: $json.llmMessages, temperature: 0.2 } }}",
+        "options": {}
+      },
+      "id": "eba0d391-18cb-49dc-8bd1-4f4835e8f916",
+      "name": "Yerel Modeli Cagir",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        976,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const summary = $('Prompt ve Ozet Hazirla').first().json;\nconst modelReply = String($json.choices?.[0]?.message?.content ?? '').trim();\nreturn [{\n  json: {\n    customerReply: modelReply || summary.fallbackReply\n  }\n}];"
+      },
+      "id": "4ac67702-b192-4a90-90be-80b38f845d7c",
+      "name": "Model Cevabini Hazirla",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1216,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { customerReply: $json.customerReply } }}",
+        "options": {}
+      },
+      "id": "9f101d78-0f17-4d30-acba-32c480c1d209",
+      "name": "Webhooka Don",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1456,
+        0
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Istegi Hazirla",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Istegi Hazirla": {
+      "main": [
+        [
+          {
+            "node": "ElasticSearch Ara",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ElasticSearch Ara": {
+      "main": [
+        [
+          {
+            "node": "Prompt ve Ozet Hazirla",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prompt ve Ozet Hazirla": {
+      "main": [
+        [
+          {
+            "node": "Yerel Modeli Cagir",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Yerel Modeli Cagir": {
+      "main": [
+        [
+          {
+            "node": "Model Cevabini Hazirla",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Model Cevabini Hazirla": {
+      "main": [
+        [
+          {
+            "node": "Webhooka Don",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "d42d9b35-2f13-4069-92c0-fc38dc3f26cc",
+  "meta": {
+    "instanceId": "9c75fca427b9ce262488ba957761bafbd88fbc39ae175f2c71576cff2831daa4"
+  },
+  "id": "q38pYzYZoe8Tuybf",
+  "tags": []
+}
